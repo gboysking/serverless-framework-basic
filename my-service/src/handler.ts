@@ -4,7 +4,8 @@ import { APIGatewayProxyEvent, Context, Callback } from "aws-lambda";
 
 import { Express } from "express";
 
-import app from './app';
+import app from './appExpress';
+import authorize from './authorizeExpress';
 
 let serverlessExpressInstance: any = null;
 
@@ -35,3 +36,13 @@ export let app_handler = (event: APIGatewayProxyEvent, context: Context, callbac
     return setup(event, context, callback, app);
 }
 
+export let authorize_handler = (event: APIGatewayProxyEvent, context: Context, callback: Callback) => {
+
+    adaptor(event, context);
+
+    if (serverlessExpressInstance) {
+        return serverlessExpressInstance(event, context, callback);
+    }
+
+    return setup(event, context, callback, authorize);
+}

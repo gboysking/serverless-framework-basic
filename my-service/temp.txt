@@ -1,0 +1,534 @@
+
+Path: ./src/handler.ts
+// import serverless from 'serverless-http';
+import serverlessExpress from '@vendia/serverless-express';
+import { APIGatewayProxyEvent, Context, Callback } from "aws-lambda";
+
+import { Express } from "express";
+
+import app from './appExpress';
+import authorize from './authorizeExpress';
+
+let serverlessExpressInstance: any = null;
+
+function adaptor(event: APIGatewayProxyEvent, context: Context) {
+    const headers = event.multiValueHeaders || {}; // NOTE: Mutating event.headers; prefer deep clone of event.headers
+    const eventWithoutBody: { body?: string | null } = Object.assign({}, event);
+    if (eventWithoutBody.body) {
+        delete eventWithoutBody.body;
+    }
+
+    headers['x-apigateway-event'] = [encodeURIComponent(JSON.stringify(eventWithoutBody))];
+    headers['x-apigateway-context'] = [encodeURIComponent(JSON.stringify(context))];
+}
+
+function setup(event: APIGatewayProxyEvent, context: Context, callback: Callback, app: Express) {
+    serverlessExpressInstance = serverlessExpress({ app: app });
+    return serverlessExpressInstance(event, context, callback)
+}
+
+export let app_handler = (event: APIGatewayProxyEvent, context: Context, callback: Callback) => {
+
+    adaptor(event, context);
+
+    if (serverlessExpressInstance) {
+        return serverlessExpressInstance(event, context, callback);
+    }
+
+    return setup(event, context, callback, app);
+}
+
+export let authorize_handler = (event: APIGatewayProxyEvent, context: Context, callback: Callback) => {
+
+    adaptor(event, context);
+
+    if (serverlessExpressInstance) {
+        return serverlessExpressInstance(event, context, callback);
+    }
+
+    return setup(event, context, callback, authorize);
+}
+Path: ./src/authorizeExpress.ts
+import express, { NextFunction, Request, Response } from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import compression from 'compression';
+
+import { eventContext } from 'libs/express';
+import cookieParser from 'cookie-parser';
+import { getAccessToken, getAccessTokenWithRefreshToken, getAuthorizationUrl, isTokenExpired } from 'libs/authorization';
+
+const app = express();
+
+//API Gateway event parsing
+app.use(eventContext());
+
+// CORS
+app.use(cors());
+
+// Security
+app.use(helmet());
+
+// Logging
+app.use(morgan((tokens, req: any, res) => {
+  const requestId = req.headers['x-apigateway-event-requestId']; // API Gateway 요청 ID 가져오기
+
+  return JSON.stringify({
+    request_id: requestId,
+    method: tokens.method(req, res),
+    url: tokens.url(req, res),
+    status: tokens.status(req, res),
+    response_time: tokens['response-time'](req, res) + ' ms',
+    remote_addr: tokens['remote-addr'](req, res),
+
+  });
+}));
+
+// Compression
+app.use(compression());
+
+// Cookie
+app.use(cookieParser());
+
+
+app.get('/login', (req: Request, res: Response, next: NextFunction) => {
+  const protocol = req.protocol;
+  const hostname = req.get('host');
+  const callbackPath = '/authorize/callback';
+
+  let callbackUrl = `${protocol}://${hostname}${callbackPath}`;
+
+  if (process.env.IS_OFFLINE) {
+    callbackUrl = `http://${hostname}/dev${callbackPath}`;
+  }
+
+  if (req.cookies && req.cookies.credentials) {
+
+    let accessToken = req.cookies.credentials.access_token;
+    let refreshToken = req.cookies.credentials.refresh_token;    
+
+    isTokenExpired(accessToken)
+      .then(async (result) => {
+
+        if (result) {
+          const newCredentials = await getAccessTokenWithRefreshToken(refreshToken, process.env.AUTH_CLIENT_ID, process.env.AUTH_CLIENT_SECRET, process.env.AUTH_TOKEN_URI);
+          console.log("credentials update.");          
+          res.cookie('credentials', JSON.stringify(newCredentials), { httpOnly: true, secure: true });
+          res.redirect('/dev/app-user-cookie/hello');
+
+        } else {
+          res.redirect('/dev/app-user-cookie/hello');
+        }
+      })
+      .catch((_err)=> {
+        console.log("cookie credentials error. redirect to login page.");
+        const url = getAuthorizationUrl({ ClientId: process.env.AUTH_CLIENT_ID, RedirectUri: callbackUrl, ResponseType: "code", Scope: "email openid", State: "" })
+
+        res.redirect(url);
+      })
+  } else {
+    const url = getAuthorizationUrl({ ClientId: process.env.AUTH_CLIENT_ID, RedirectUri: callbackUrl, ResponseType: "code", Scope: "email openid", State: "" })
+
+    res.redirect(url);
+  }
+});
+
+app.get('/callback', (req: Request, res: Response, next: NextFunction) => {
+  const { code } = req.query;
+
+  const protocol = req.protocol;
+  const hostname = req.get('host');
+  const callbackPath = '/authorize/callback';
+
+  let callbackUrl = `${protocol}://${hostname}${callbackPath}`;
+
+  if (process.env.IS_OFFLINE) {
+    callbackUrl = `http://${hostname}/dev${callbackPath}`;
+  }
+
+  getAccessToken(code as string, callbackUrl, process.env.AUTH_CLIENT_ID, process.env.AUTH_CLIENT_SECRET, process.env.AUTH_TOKEN_URI)
+    .then((result) => {
+      res.cookie('credentials', JSON.stringify(result), { httpOnly: true, secure: true }); // 쿠키 저장
+      res.redirect('/dev/app-user-cookie/profile');
+      // res.json(result.data);
+    })
+    .catch((reason: any) => {
+      next(reason);
+    })
+    ;
+}
+);
+
+export default app;
+
+Path: ./src/libs/interface.ts
+export type Credentials = {
+    access_token: string,
+    refresh_token: string,
+    expires_in: number,
+    token_type: "Bearer"
+  };
+Path: ./src/libs/authorization.ts
+import { APIGatewayAuthorizerResultContext, CustomAuthorizerResult } from "aws-lambda";
+import { JwtHeader } from "jsonwebtoken";
+import { verify } from "jsonwebtoken";
+import jwksClient from "jwks-rsa";
+import jwt from 'jsonwebtoken';
+import { Credentials } from "./interface";
+import axios from "axios";
+
+const client = jwksClient({
+    jwksUri: process.env.AUTH_JWKS_URI,
+});
+
+export let getKey = (header: JwtHeader, callback: (err: Error | null, signingKey?: string) => void): void => {
+    client.getSigningKey(header.kid, (err, key) => {
+        if (err) {
+            callback(err);
+            return;
+        }
+        const signingKey = key.getPublicKey();
+        callback(null, signingKey);
+    });
+}
+
+export let verifyToken = (token: string): Promise<any> => {
+    return new Promise((resolve, reject) => {
+        verify(token, (header, callback) => getKey(header, callback), { algorithms: ["RS256"] }, (err, decoded) => {
+            if (err) {
+                console.log(err);
+                reject(err);
+            } else {
+                resolve(decoded);
+            }
+        });
+    });
+}
+
+export let generatePolicy = (principalId: string, effect: string, resource: string | string[], context?: APIGatewayAuthorizerResultContext): CustomAuthorizerResult => {
+    return {
+        principalId,
+        policyDocument: {
+            Version: "2012-10-17",
+            Statement: [
+                {
+                    Action: "execute-api:Invoke",
+                    Effect: effect,
+                    Resource: resource,
+                },
+            ],
+        },
+        context: context,
+    };
+}
+
+export let getAuthorizationUrl = (params: {
+    ClientId: string;
+    ResponseType: string;
+    Scope: string;
+    RedirectUri: string;
+    State: string;
+  }): string => {
+    const queryParams = new URLSearchParams({
+      client_id: params.ClientId,
+      response_type: params.ResponseType,
+      scope: params.Scope,
+      redirect_uri: params.RedirectUri,
+      state: params.State,
+    });
+  
+    return `${process.env.AUTH_AUTHORIZATION_URI}?${queryParams.toString()}`;
+  }
+  
+  export let getAccessTokenWithRefreshToken = (refreshToken: string, clientId: string, clientSecret: string, tokenUri: string): Promise<Credentials> => {
+    return new Promise((resolve, reject) => {
+      const body = {
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: clientId
+      };
+  
+      const credentials = `${clientId}:${clientSecret}`;
+      const base64EncodedCredentials = Buffer.from(credentials).toString('base64');
+  
+      axios.post<Credentials>(tokenUri, body, {
+        headers: {
+          'Content-Type': "application/x-www-form-urlencoded",
+          Authorization: `Basic ${base64EncodedCredentials}`
+        }
+      })
+        .then((response) => {
+          resolve(response.data);
+        })
+        .catch((error) => {
+          reject(error);
+        });
+    });
+  }
+  
+  export let getAccessToken = (code: string, redirectUri: string, clientId: string, clientSecret: string, tokenUri: string): Promise<Credentials> => {
+    return new Promise((resolve, reject) => {
+      const body = {
+        grant_type: "authorization_code",
+        code: code,
+        client_id: clientId,
+        redirect_uri: redirectUri,
+      };
+  
+      const credentials = `${clientId}:${clientSecret}`;
+      const base64EncodedCredentials = Buffer.from(credentials).toString('base64');
+  
+      axios.post<Credentials>(tokenUri, body, {
+        headers: {
+          'Content-Type': "application/x-www-form-urlencoded",
+          Authorization: `Basic ${base64EncodedCredentials}`
+        }
+      })
+        .then((response) => {
+          resolve(response.data);
+        })
+        .catch((error) => {
+          reject(error);
+        });
+    });
+  }
+  
+  export let isTokenExpired = (token: string): Promise<boolean> => {
+    return new Promise((resolve, reject) => {
+      try {
+        const decodedToken: any = jwt.decode(token);
+        const expirationTime = decodedToken.exp * 1000; // JWT 토큰에서 exp 필드는 초 단위로 저장되어 있으므로 밀리초로 변환
+  
+        resolve(Date.now() > expirationTime);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  
+  }
+Path: ./src/libs/cognito.ts
+import axios from "axios";
+
+export let getUserInfo = (userPoolDomain: string, accessToken:string): Promise<any> => {
+    return new Promise((resolve, reject) => {
+      axios.get(`https://${userPoolDomain}/oauth2/userInfo`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
+      })
+        .then((response) => {
+          resolve(response.data);
+        })
+        .catch((error) => {
+            console.log(error);
+          reject(error);
+        });
+    });
+  }
+Path: ./src/libs/express.ts
+import { NextFunction, Request, Response } from "express";
+
+export interface Options {
+    reqPropKey?: string;
+    deleteHeaders?: boolean;
+}
+
+export let eventContext = (options?: Options) => (req: Request & { [name: string]: any }, _res: Response, next: NextFunction) => {
+    options = options || {}; // defaults: {reqPropKey: 'apiGateway', deleteHeaders: true}
+    const reqPropKey = options.reqPropKey || 'apiGateway';
+    const deleteHeaders = options.deleteHeaders === undefined ? true : options.deleteHeaders;
+
+    if (!req.headers['x-apigateway-event'] || !req.headers['x-apigateway-context']) {
+        console.error('Missing x-apigateway-event or x-apigateway-context header(s)');
+        next();
+        return;
+    }
+
+    if (reqPropKey != null) {
+        req[reqPropKey] = {
+            event: JSON.parse(decodeURIComponent(req.headers['x-apigateway-event'] as string)),
+            context: JSON.parse(decodeURIComponent(req.headers['x-apigateway-context'] as string))
+        }
+    }
+
+    req.headers['x-apigateway-event-requestId'] = req[reqPropKey].event.requestContext.requestId;
+
+    if (deleteHeaders) {
+        delete req.headers['x-apigateway-event']
+        delete req.headers['x-apigateway-context']
+    }
+
+    next();
+}
+
+Path: ./src/appExpress.ts
+import express, { NextFunction, Request, Response } from 'express';
+import bodyParser from 'body-parser';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import cookieParser from 'cookie-parser';
+import compression from 'compression';
+import { eventContext } from 'libs/express';
+import { getUserInfo } from 'libs/cognito';
+
+const app = express();
+
+//API Gateway event parsing
+app.use(eventContext());
+
+// Body parser
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// CORS
+app.use(cors());
+
+// Security
+app.use(helmet());
+
+// Logging
+app.use(morgan((tokens, req: any, res) => {
+  const requestId = req.headers['x-apigateway-event-requestId']; // API Gateway 요청 ID 가져오기
+
+  return JSON.stringify({
+    request_id: requestId,
+    method: tokens.method(req, res),
+    url: tokens.url(req, res),
+    status: tokens.status(req, res),
+    response_time: tokens['response-time'](req, res) + ' ms',
+    remote_addr: tokens['remote-addr'](req, res),
+
+  });
+}));
+
+// Cookie parser
+app.use(cookieParser());
+
+// Compression
+app.use(compression());
+
+// 라우터와 기타 애플리케이션 로직은 여기에 추가합니다.
+
+app.get('/hello', (req: Request, res: Response) => {
+  console.log(req.query);
+
+  res.send('Hello from Serverless TypeScript Express app!!!!!');
+});
+
+app.get('/profile', (req: Request, res: Response, next: NextFunction) => {
+  // console.log(req.query);
+
+
+  if (req.cookies && req.cookies.credentials) {
+    const credentials = JSON.parse(req.cookies.credentials);
+    let accessToken = credentials.access_token;
+
+    getUserInfo(process.env.COGNITO_USER_POOL_DOMAIN_NAME, accessToken)
+      .then((result) => {
+
+        res.json(result);
+      })
+      .catch((err) => {
+        next(err);
+      })
+  } else {
+    res.status(500).json({ "message": "Server Error" });
+  }
+
+});
+
+export default app;
+
+Path: ./src/index.d.ts
+import express, { Request } from "express";
+
+declare module "express" {
+    interface Request {
+        apiGateway?: {
+            event: any;
+            context: any;
+        };
+    }
+}
+Path: ./src/auth/requestAuthorizer.ts
+import { APIGatewayRequestAuthorizerEvent, APIGatewayAuthorizerResult } from "aws-lambda";
+import { generatePolicy } from "libs/authorization";
+
+export const handler = async (event: APIGatewayRequestAuthorizerEvent): Promise<APIGatewayAuthorizerResult> => {
+  const customHeader = event.headers["CustomHeader"];
+
+  if (customHeader === "test1234") {
+    return generatePolicy("user", "Allow", event.methodArn);
+  } else {
+    return generatePolicy("user", "Deny", event.methodArn);
+  }
+};
+Path: ./src/auth/cookieAuthorizer.ts
+import { CustomAuthorizerResult, Context, APIGatewayRequestAuthorizerEvent } from "aws-lambda";
+import { generatePolicy, verifyToken } from "libs/authorization";
+
+export const handler = async (event: APIGatewayRequestAuthorizerEvent, _context: Context): Promise<CustomAuthorizerResult> => {
+    const headers = event.headers;
+    const cookies = headers ? headers.Cookie : null;
+
+    if (cookies) {
+
+        const parsedCookies = cookies.split(';').reduce((acc, cookie) => {
+            const [key, value] = cookie.trim().split('=');
+            acc[key] = decodeURIComponent(value);
+            return acc;
+        }, {});
+
+        const credentials = JSON.parse(parsedCookies['credentials']);
+
+        try {
+            const decoded = await verifyToken(credentials.access_token);
+            const policy = generatePolicy(decoded.sub, "Allow", event.methodArn, decoded);
+            return policy;
+        } catch (error) {
+            console.error("Token verification failed:", error.message);
+            throw new Error("Unauthorized"); // 인증 실패시 Unauthorized 에러 발생
+        }
+    }
+
+    throw new Error("Unauthorized"); // 인증 실패시 Unauthorized 에러 발생
+};
+
+Path: ./src/auth/cognitoAuthorizer.ts
+import { APIGatewayTokenAuthorizerEvent, CustomAuthorizerResult, Context } from "aws-lambda";
+import { generatePolicy, verifyToken } from "libs/authorization";
+
+export const handler = async (event: APIGatewayTokenAuthorizerEvent, _context: Context): Promise<CustomAuthorizerResult> => {
+    const token = event.authorizationToken;
+
+    try {
+        const tokenPart = token.split(" ");
+
+        if (tokenPart[0] !== "Bearer") {
+            throw new Error("This token is not Bearer type.");
+        }
+
+        const decoded = await verifyToken(tokenPart[1]);
+        const policy = generatePolicy(decoded.sub, "Allow", event.methodArn);
+        return policy;
+    } catch (error) {
+        console.error("Token verification failed:", error.message);
+        throw new Error("Unauthorized");
+    }
+};
+
+Path: ./src/auth/tokenAuthorizer.ts
+import { APIGatewayTokenAuthorizerHandler } from 'aws-lambda';
+import { generatePolicy } from 'libs/authorization';
+
+export const handler: APIGatewayTokenAuthorizerHandler = async (event) => {
+    const token = event.authorizationToken;
+
+    if (token != "test1234") {
+        return generatePolicy("user", "Deny", event.methodArn);
+    }
+
+    return generatePolicy("user", "Allow", event.methodArn);
+};

@@ -21,7 +21,15 @@ functions:
   tokenAuthorizer:
     handler: src/auth/tokenAuthorizer.handler
   requestAuthorizer:
-    handler: src/auth/requestAuthorizer.handler    
+    handler: src/auth/requestAuthorizer.handler
+  cognitoAuthorizer:
+    handler: src/auth/cognitoAuthorizer.handler
+    environment:
+      AUTH_JWKS_URI: ${env:AUTH_JWKS_URI}
+  cookieAuthorizer:
+    handler: src/auth/cookieAuthorizer.handler
+    environment:
+      AUTH_JWKS_URI: ${env:AUTH_JWKS_URI}      
   app:
     handler: src/handler.app_handler
     events:
@@ -52,3 +60,45 @@ functions:
             name: requestAuthorizer
             identitySource:
               - method.request.header.CustomHeader
+  appUserToken:
+    handler: src/handler.app_handler
+    environment:
+      COGNITO_USER_POOL_DOMAIN_NAME: ${env:COGNITO_USER_POOL_DOMAIN_NAME}      
+    events:
+      - http:
+          path: /app-user-token/{proxy+}
+          method: ANY
+          cors: true
+          authorizer:
+            type: TOKEN
+            name: cognitoAuthorizer
+            resultTtlInSeconds: 0
+            identityValidationExpression: ".*"                
+  appUserCookie:
+    handler: src/handler.app_handler
+    environment:
+      COGNITO_USER_POOL_DOMAIN_NAME: ${env:COGNITO_USER_POOL_DOMAIN_NAME}         
+    events:
+      - http:
+          path: /app-user-cookie/{proxy+}
+          method: ANY
+          cors: true
+          authorizer:
+            type: REQUEST
+            name: cookieAuthorizer
+            identitySource:
+              - method.request.header.Cookie    
+            resultTtlInSeconds: 0
+            identityValidationExpression: ".*"          
+  authorize:
+    handler: src/handler.authorize_handler
+    environment:
+      AUTH_AUTHORIZATION_URI: ${env:AUTH_AUTHORIZATION_URI}
+      AUTH_TOKEN_URI: ${env:AUTH_TOKEN_URI}
+      AUTH_CLIENT_ID: ${env:AUTH_CLIENT_ID}
+      AUTH_CLIENT_SECRET: ${env:AUTH_CLIENT_SECRET}
+    events:
+      - http:
+          path: /authorize/{proxy+}
+          method: ANY
+          cors: true                               

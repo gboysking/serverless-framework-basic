@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -6,12 +6,7 @@ import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
 import compression from 'compression';
 import { eventContext } from 'libs/express';
-
-export interface Options {
-  reqPropKey?: string;
-  deleteHeaders?: boolean;
-}
-
+import { getUserInfo } from 'libs/cognito';
 
 const app = express();
 
@@ -33,7 +28,7 @@ app.use(morgan((tokens, req: any, res) => {
   const requestId = req.headers['x-apigateway-event-requestId']; // API Gateway 요청 ID 가져오기
 
   return JSON.stringify({
-    request_id:requestId,
+    request_id: requestId,
     method: tokens.method(req, res),
     url: tokens.url(req, res),
     status: tokens.status(req, res),
@@ -57,16 +52,26 @@ app.get('/hello', (req: Request, res: Response) => {
   res.send('Hello from Serverless TypeScript Express app!!!!!');
 });
 
-app.post('/hello', (req: Request, res: Response) => {
-  console.log(req.body);
+app.get('/profile', (req: Request, res: Response, next: NextFunction) => {
+  // console.log(req.query);
 
-  res.send('Hello from Serverless TypeScript Express app!!!');
-});
 
-app.delete('/hello', (req: Request, res: Response) => {
-  console.log(req.body);
+  if (req.cookies && req.cookies.credentials) {
+    const credentials = JSON.parse(req.cookies.credentials);
+    let accessToken = credentials.access_token;
 
-  res.send('Hello from Serverless TypeScript Express app!!!');
+    getUserInfo(process.env.COGNITO_USER_POOL_DOMAIN_NAME, accessToken)
+      .then((result) => {
+
+        res.json(result);
+      })
+      .catch((err) => {
+        next(err);
+      })
+  } else {
+    res.status(500).json({ "message": "Server Error" });
+  }
+
 });
 
 export default app;
