@@ -21,9 +21,9 @@ export const handler = async (event: APIGatewayRequestAuthorizerEvent, _context:
             return policy;
         } catch (error) {
             console.error("Token verification failed:", error.message);
-            throw new Error("Unauthorized"); // 인증 실패시 Unauthorized 에러 발생
+            throw new Error("Unauthorized");
         }
     }
 
-    throw new Error("Unauthorized"); // 인증 실패시 Unauthorized 에러 발생
+    throw new Error("Unauthorized");
 };

@@ -42,27 +42,28 @@ app.use(cookieParser());
 
 
 app.get('/login', (req: Request, res: Response, next: NextFunction) => {
-  const protocol = req.protocol;
+  const protocol = process.env.IS_OFFLINE ? "http" : req.protocol;
   const hostname = req.get('host');
   const callbackPath = '/authorize/callback';
+  const baseUrl = req.baseUrl.replace('/login', '');
 
-  let callbackUrl = `${protocol}://${hostname}${callbackPath}`;
+  let callbackUrl = `${protocol}://${hostname}${baseUrl}/${process.env.STAGE}${callbackPath}`;
 
-  if (process.env.IS_OFFLINE) {
-    callbackUrl = `http://${hostname}/dev${callbackPath}`;
+  if (process.env.AUTH_CALLBACK_URI) {
+    callbackUrl = process.env.AUTH_CALLBACK_URI;
   }
 
   if (req.cookies && req.cookies.credentials) {
 
     let accessToken = req.cookies.credentials.access_token;
-    let refreshToken = req.cookies.credentials.refresh_token;    
+    let refreshToken = req.cookies.credentials.refresh_token;
 
     isTokenExpired(accessToken)
       .then(async (result) => {
 
         if (result) {
           const newCredentials = await getAccessTokenWithRefreshToken(refreshToken, process.env.AUTH_CLIENT_ID, process.env.AUTH_CLIENT_SECRET, process.env.AUTH_TOKEN_URI);
-          console.log("credentials update.");          
+          console.log("credentials update.");
           res.cookie('credentials', JSON.stringify(newCredentials), { httpOnly: true, secure: true });
           res.redirect('/dev/app-user-cookie/hello');
 
@@ -70,7 +71,7 @@ app.get('/login', (req: Request, res: Response, next: NextFunction) => {
           res.redirect('/dev/app-user-cookie/hello');
         }
       })
-      .catch((_err)=> {
+      .catch((_err) => {
         console.log("cookie credentials error. redirect to login page.");
         const url = getAuthorizationUrl({ ClientId: process.env.AUTH_CLIENT_ID, RedirectUri: callbackUrl, ResponseType: "code", Scope: "email openid", State: "" })
 

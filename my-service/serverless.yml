@@ -16,6 +16,8 @@ provider:
   timeout: 5
   stage: dev
   region: ap-northeast-2
+  environment:
+    STAGE: ${self:provider.stage}
 
 functions:
   tokenAuthorizer:
