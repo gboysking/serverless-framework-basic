@@ -1,5 +1,7 @@
 service: my-service
 
+useDotenv: true
+
 plugins:
   - serverless-esbuild
   - serverless-offline
