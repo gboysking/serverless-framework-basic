@@ -1,4 +1,4 @@
-# my-service
+# cognito
 
 AWS Cognito + Express + Serverless Framework
 
