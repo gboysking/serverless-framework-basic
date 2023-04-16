@@ -1,16 +1,19 @@
 # DynamoDB Device Data Storage with Express
 
+AWS DynamoDB + Express + Serverless Framework
+
+This project is an implementation of the AWS DynamoDB service using Express and the Serverless Framework, written in TypeScript. It is based on the implementation described in [this blog post](https://tobelinuxer.tistory.com/69).
+
 This repository contains a simple example of how to store and manage device data using AWS DynamoDB and Express. The project demonstrates how to create a custom table class for interacting with DynamoDB, set up an Express API server, and run the application locally using the Serverless Framework.
 
 ## Table of Contents
 
 1. [Prerequisites](#prerequisites)
-2. [Installation](#installation)
-3. [Project Structure](#project-structure)
-4. [Running the Application](#running-the-application)
-5. [API Endpoints](#api-endpoints)
-6. [Contributing](#contributing)
-7. [License](#license)
+2. [Project Structure](#project-structure)
+3. [Running the Application](#running-the-application)
+4. [API Endpoints](#api-endpoints)
+5. [Contributing](#contributing)
+6. [License](#license)
 
 ## Prerequisites
 
@@ -20,28 +23,6 @@ Before getting started, make sure you have the following software installed on y
 - [npm](https://www.npmjs.com/get-npm) (usually included with Node.js)
 - [AWS CLI](https://aws.amazon.com/cli/) (optional, for deploying to AWS)
 - [Serverless Framework](https://www.serverless.com/) (optional, for running the application locally)
-
-## Installation
-
-To set up the project, follow these steps:
-
-1. Clone the repository:
-
-   ```bash
-   git clone https://github.com/yourusername/dynamodb-device-data-express.git
-   ```
-
-2. Navigate to the project directory:
-
-   ```bash
-   cd dynamodb-device-data-express
-   ```
-
-3. Install the dependencies:
-
-   ```bash
-   npm install
-   ```
 
 ## Project Structure
 
