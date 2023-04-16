@@ -1,0 +1,32 @@
+service: dynamodb
+
+useDotenv: true
+
+plugins:
+  - serverless-esbuild
+  - serverless-offline
+
+custom:
+  serverless-offline:
+    httpPort: 3000
+
+provider:
+  name: aws
+  runtime: nodejs16.x
+  lambdaHashingVersion: 20201221
+  memorySize: 128
+  timeout: 5
+  stage: dev
+  region: ap-northeast-2
+  environment:
+    STAGE: ${self:provider.stage}
+
+functions:
+  app:
+    handler: src/handler.app_handler
+    events:
+      - http:
+          path: /app/{proxy+}
+          method: ANY
+          cors: true        
+                  
